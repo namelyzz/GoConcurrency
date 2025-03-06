@@ -404,3 +404,148 @@ Worker 2: 所有任务处理完成
     - 使用无缓冲channel进行goroutine间的精确协调
     - 使用有缓冲channel解耦生产者和消费者
     - 缓冲区大小应根据实际速率差异谨慎选择
+# 课后思考
+
+## 在什么场景下你会选择无缓冲channel？什么场景下会选择有缓冲channel？
+
+无缓冲的特点是同步通信，也就是适用于发送和接收必须同时准备好的常见
+
+所以，可以使用的场景有：
+
+1. 需要精确的同步控制
+
+```go
+func main() {
+    done := make(chan bool) // 无缓冲
+    go func() {
+        fmt.Println("工作完成")
+        done <- true // 阻塞直到主程序接收
+    }()
+    <-done // 等待 goroutine 完成
+}
+```
+
+1. 请求 - 响应模式的场景
+
+```go
+func worker(task int, result chan<- int) {
+    result <- task * 2
+}
+```
+
+1. 保证顺序执行
+
+```go
+func sequentialOperations() {
+    ch := make(chan int)
+    go func() { ch <- step1() }()
+    go func() { ch <- step2(<-ch) }()
+    result := <-ch
+}
+```
+
+而有缓冲的Channel特点是异步通信，允许一定程度的生产和消费速度差异
+
+可以用在：
+
+1. 简单的进行平滑流量峰值
+
+```go
+func handleRequests(requests <-chan Request) {
+    buffered := make(chan Request, 100) // 缓冲突发请求
+    // ...
+}
+```
+
+1. 批处理操作
+
+```go
+func batchProcessor() {
+    batch := make(chan Data, 50) // 累积一批数据再处理
+}
+```
+
+1. 解耦生产消费速率
+
+```go
+func producerConsumer() {
+    dataChannel := make(chan Data, 10) // 生产者可以提前生产
+}
+```
+
+## 如果生产者比消费者快很多，缓冲区大小应该如何选择？
+
+当生产者比消费者快很多时：理论计算为`缓冲区大小 ≈ (生产者速率 - 消费者速率) × 可接受的延迟时间`
+
+一般来说，缓冲区大小范围为：
+
+```go
+// 小缓冲区：轻度不匹配
+make(chan T, 5-20)    // 生产稍快于消费
+
+// 中等缓冲区：明显不匹配  
+make(chan T, 50-200)  // 生产明显快于消费
+
+// 大缓冲区：严重不匹配
+make(chan T, 1000+)   // 生产远快于消费，需要考虑其他方案
+```
+
+但是，需要特别提醒的是：**缓冲区只是临时解决方案！**
+
+如果实际场景中，生产和消费的速率持续的不平衡，你应该：
+
+1. 增加消费者数量
+2. 优化消费者性能
+3. 考虑被压机制
+
+## 为什么说"通过通信来共享内存比通过共享内存来通信更好"？
+
+什么是通过共享内存通信呢？
+
+```go
+type Counter struct {
+    mu    sync.Mutex
+    value int
+}
+
+func (c *Counter) Increment() {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    c.value++
+}
+```
+
+- 容易出现竞态条件
+- 需要复杂的锁机制
+- 调试困难
+- 容易死锁
+
+Go 的想法是
+
+```go
+type Counter struct {
+    ops chan func(int) int
+}
+
+func NewCounter() *Counter {
+    c := &Counter{ops: make(chan func(int) int)}
+    go c.loop()
+    return c
+}
+
+func (c *Counter) loop() {
+    var value int
+    for op := range c.ops {
+        value = op(value)
+    }
+}
+
+func (c *Counter) Increment() {
+    c.ops <- func(v int) int { return v + 1 }
+}
+```
+
+1. **更安全**：数据所有权明确，避免了竞态条件
+2. **更清晰**：数据流明确，易于理解和维护
+3. **更符合并发模型**：每个 goroutine 管理自己的状态
+4. **更好的组合性**：易于构建复杂的并发模式

@@ -12,8 +12,8 @@ type ConfigManager struct {
 }
 
 func (c *ConfigManager) Get(key string) string {
-	c.rw.Lock()
-	defer c.rw.Unlock()
+	c.rw.RLock()
+	defer c.rw.RUnlock()
 
 	time.Sleep(10 * time.Millisecond) // 这里模拟读取的耗时
 	return c.config[key]
